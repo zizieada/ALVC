@@ -9,8 +9,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # use CPU for RPM to ensure the determinism
 # config = tf.ConfigProto(allow_soft_placement=True, device_count={'GPU': 0})
-config = tf.ConfigProto(allow_soft_placement=True)
-sess = tf.Session(config=config)
+#config = tf.ConfigProto(allow_soft_placement=True)
+#sess = tf.Session(config=config)
 
 parser = argparse.ArgumentParser(
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -25,6 +25,12 @@ parser.add_argument("--entropy_coding", type=int, default=0)
 parser.add_argument("--N", type=int, default=128, choices=[128])
 parser.add_argument("--M", type=int, default=128, choices=[128])
 args = parser.parse_args()
+
+#gpu_options = tf.GPUOptions(allow_growth=True)
+#config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 0.9
 
 # Settings
 I_level, Height, Width, batch_size, Channel, \
@@ -84,32 +90,105 @@ for lat in latents:
 
     # load model
     model_path = './model/RPM/RPM_' + args.mode + '_' + str(args.l) + '_' + lat
-    saver = tf.train.Saver(max_to_keep=None)
-    saver.restore(sess, save_path=model_path + '/model.ckpt')
+    init = tf.global_variables_initializer()
 
-    # encode GOPs
-    for g in range(GOP_num):
+    with tf.Session(config=config) as sess:
+        sess.run(init)
 
-        # forward P frames (only if more than 2 P frames exist)
-        if args.f_P >= 2:
+        saver = tf.train.Saver(max_to_keep=None)
+        saver.restore(sess, save_path=model_path + '/model.ckpt')
+
+        # encode GOPs
+        for g in range(GOP_num):
+
+            # forward P frames (only if more than 2 P frames exist)
+            if args.f_P >= 2:
+                # load first prior
+                frame_index = g * GOP_size + 2
+                prior_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
+
+                # init state
+                h_state = np.zeros([2, batch_size, Height // 16, Width // 16, args.N], dtype=np.float)
+
+                for f in range(args.f_P - 1):
+
+                    # load latent
+                    frame_index = g * GOP_size + f + 3
+                    latent_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
+
+                    # run RPM
+                    bits_estimation, sigma_value, mu_value, h_state \
+                        = sess.run([bits_est, sigma, mu, hidden_states_out],
+                                feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
+                                hidden_states: h_state})
+
+                    if args.entropy_coding:
+                        bits_value = helper2.entropy_coding(frame_index, lat, path_bin, latent_value, sigma_value, mu_value)
+                        total_bits += bits_value
+                        # print('Frame', frame_index, lat + '_bits =', bits_value)
+                    else:
+                        total_bits += bits_estimation
+                        # print('Frame', frame_index, lat + '_bits =', bits_estimation)
+                        bpp[frame_index - 1] += bits_estimation / Height / Width
+
+                    # the latent will be the prior for the next latent
+                    prior_value = latent_value
+
+            # backward P frames (only if more than 2 P frames exist)
+            if args.b_P >= 2:
+                # load first prior
+                frame_index = (g + 1) * GOP_size
+                prior_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
+
+                # init state
+                h_state = np.zeros([2, batch_size, Height // 16, Width // 16, args.N], dtype=np.float)
+
+                for f in range(args.b_P - 1):
+
+                    # load latent
+                    frame_index = (g + 1) * GOP_size - f - 1
+                    latent_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
+
+                    # run RPM
+                    bits_estimation, sigma_value, mu_value, h_state \
+                        = sess.run([bits_est, sigma, mu, hidden_states_out],
+                                feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
+                                            hidden_states: h_state})
+
+                    if args.entropy_coding:
+                        bits_value = helper2.entropy_coding(frame_index, lat, path_bin, latent_value, sigma_value, mu_value)
+                        total_bits += bits_value
+                        # print('Frame', frame_index, lat + '_bits =', bits_value)
+                    else:
+                        total_bits += bits_estimation
+                        # print('Frame', frame_index, lat + '_bits =', bits_estimation)
+                        bpp[frame_index - 1] += bits_estimation / Height / Width
+
+                    # the latent will be the prior for the next latent
+                    prior_value = latent_value
+
+        # encode rest frames (only if more than 2 P frames exist)
+        rest_frame_num = args.frame - 1 - GOP_size * GOP_num
+
+        if rest_frame_num >= 2:
             # load first prior
-            frame_index = g * GOP_size + 2
+            frame_index = GOP_num * GOP_size + 2
             prior_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
 
             # init state
             h_state = np.zeros([2, batch_size, Height // 16, Width // 16, args.N], dtype=np.float)
 
-            for f in range(args.f_P - 1):
+            for f in range(rest_frame_num - 1):
 
                 # load latent
-                frame_index = g * GOP_size + f + 3
+                frame_index = GOP_num * GOP_size + f + 3
                 latent_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
 
                 # run RPM
                 bits_estimation, sigma_value, mu_value, h_state \
                     = sess.run([bits_est, sigma, mu, hidden_states_out],
-                               feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
-                               hidden_states: h_state})
+                            feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
+                                        hidden_states: h_state})
 
                 if args.entropy_coding:
                     bits_value = helper2.entropy_coding(frame_index, lat, path_bin, latent_value, sigma_value, mu_value)
@@ -122,74 +201,6 @@ for lat in latents:
 
                 # the latent will be the prior for the next latent
                 prior_value = latent_value
-
-        # backward P frames (only if more than 2 P frames exist)
-        if args.b_P >= 2:
-            # load first prior
-            frame_index = (g + 1) * GOP_size
-            prior_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
-
-            # init state
-            h_state = np.zeros([2, batch_size, Height // 16, Width // 16, args.N], dtype=np.float)
-
-            for f in range(args.b_P - 1):
-
-                # load latent
-                frame_index = (g + 1) * GOP_size - f - 1
-                latent_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
-
-                # run RPM
-                bits_estimation, sigma_value, mu_value, h_state \
-                    = sess.run([bits_est, sigma, mu, hidden_states_out],
-                               feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
-                                          hidden_states: h_state})
-
-                if args.entropy_coding:
-                    bits_value = helper2.entropy_coding(frame_index, lat, path_bin, latent_value, sigma_value, mu_value)
-                    total_bits += bits_value
-                    # print('Frame', frame_index, lat + '_bits =', bits_value)
-                else:
-                    total_bits += bits_estimation
-                    # print('Frame', frame_index, lat + '_bits =', bits_estimation)
-                    bpp[frame_index - 1] += bits_estimation / Height / Width
-
-                # the latent will be the prior for the next latent
-                prior_value = latent_value
-
-    # encode rest frames (only if more than 2 P frames exist)
-    rest_frame_num = args.frame - 1 - GOP_size * GOP_num
-
-    if rest_frame_num >= 2:
-        # load first prior
-        frame_index = GOP_num * GOP_size + 2
-        prior_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
-
-        # init state
-        h_state = np.zeros([2, batch_size, Height // 16, Width // 16, args.N], dtype=np.float)
-
-        for f in range(rest_frame_num - 1):
-
-            # load latent
-            frame_index = GOP_num * GOP_size + f + 3
-            latent_value = np.load(path_lat + '/f' + str(frame_index).zfill(3) + '_' + lat + '.npy')
-
-            # run RPM
-            bits_estimation, sigma_value, mu_value, h_state \
-                = sess.run([bits_est, sigma, mu, hidden_states_out],
-                           feed_dict={prior_tensor: prior_value, latent_tensor: latent_value,
-                                      hidden_states: h_state})
-
-            if args.entropy_coding:
-                bits_value = helper2.entropy_coding(frame_index, lat, path_bin, latent_value, sigma_value, mu_value)
-                total_bits += bits_value
-                # print('Frame', frame_index, lat + '_bits =', bits_value)
-            else:
-                total_bits += bits_estimation
-                # print('Frame', frame_index, lat + '_bits =', bits_estimation)
-                bpp[frame_index - 1] += bits_estimation / Height / Width
-
-            # the latent will be the prior for the next latent
-            prior_value = latent_value
 
 bpp_video = total_bits/args.frame/Height/Width
 

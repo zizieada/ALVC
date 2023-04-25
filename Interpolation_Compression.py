@@ -9,8 +9,8 @@ import mc_func
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-config = tf.ConfigProto(allow_soft_placement=True)
-sess = tf.Session(config=config)
+#config = tf.ConfigProto(allow_soft_placement=True)
+#sess = tf.Session(config=config)
 
 parser = argparse.ArgumentParser(
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -27,6 +27,14 @@ parser.add_argument("--l", type=int, default=512, choices=[256, 512, 1024, 2048]
 parser.add_argument("--N", type=int, default=128, choices=[128])
 parser.add_argument("--M", type=int, default=128, choices=[128])
 args = parser.parse_args()
+
+#gpu_options = tf.GPUOptions(allow_growth=True)
+#config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 0.9
+
+model_path = './model/Interpolation/lambda_' + str(args.l) + '_inter_' + str(args.inter) + '/'
 
 path_root = './'
 path_raw = args.path + '/'
@@ -114,91 +122,95 @@ frame_t_com, mse_loss, psnr_loss, bpp_loss, flow_lat, res_lat = \
 psnr_value = np.load(path_bin + 'quality.npy')
 bpp_value = np.load(path_bin + 'bpp.npy')
 
-sess.run(tf.global_variables_initializer())
-all_var = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-saver = tf.train.Saver(max_to_keep=None, var_list=all_var)
-model_path = './model/Interpolation/lambda_' + str(args.l) + '_inter_' + str(args.inter) + '/'
-saver.restore(sess, save_path=model_path + 'model.ckpt-200000')
+init = tf.global_variables_initializer()
+with tf.Session(config=config) as sess:
 
-# encode GOPs
-for g in range(GOP_num):
+    sess.run(init)
 
-    F_left = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P).zfill(3) + '.png').astype(float)
-    F_0 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.png').astype(float)
-    F_1 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 2).zfill(3) + '.png').astype(float)
-    F_right = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 3).zfill(3) + '.png').astype(float)
+    #sess.run(tf.global_variables_initializer())
+    all_var = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    saver = tf.train.Saver(max_to_keep=None, var_list=all_var)
+    saver.restore(sess, save_path=model_path + 'model.ckpt-200000')
 
-    G_t = misc.imread(path_raw + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png').astype(float)
+    # encode GOPs
+    for g in range(GOP_num):
 
-    input_data = np.stack([F_left, F_0, G_t, F_1, F_right], axis=0)
-    input_data = np.expand_dims(input_data/255.0, axis=0)
+        F_left = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P).zfill(3) + '.png').astype(float)
+        F_0 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.png').astype(float)
+        F_1 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 2).zfill(3) + '.png').astype(float)
+        F_right = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 3).zfill(3) + '.png').astype(float)
 
-    psnr, bpp, F_t, mv_latent, res_latent \
-        = sess.run([psnr_loss, bpp_loss, frame_t_com, flow_lat, res_lat],
-                   feed_dict={data_tensor:input_data, inter_num:args.inter})
+        G_t = misc.imread(path_raw + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png').astype(float)
 
-    # with open(path_bin + '/f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.bin', "wb") as ff:
-    #     ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
-    #     ff.write(string_MV)
-    #     ff.write(string_Res)
+        input_data = np.stack([F_left, F_0, G_t, F_1, F_right], axis=0)
+        input_data = np.expand_dims(input_data/255.0, axis=0)
 
-    F_t = np.clip(F_t, 0, 1)
-    F_t = np.uint8(F_t * 255.0)
+        psnr, bpp, F_t, mv_latent, res_latent \
+            = sess.run([psnr_loss, bpp_loss, frame_t_com, flow_lat, res_lat],
+                    feed_dict={data_tensor:input_data, inter_num:args.inter})
 
-    psnr_value[g * GOP_size + args.f_P + 1] = psnr
-    bpp_value[g * GOP_size + args.f_P + 1] = bpp
+        # with open(path_bin + '/f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.bin', "wb") as ff:
+        #     ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
+        #     ff.write(string_MV)
+        #     ff.write(string_Res)
 
-    print('Frame', g * GOP_size + args.f_P + 2, args.metric + ' =', psnr)
+        F_t = np.clip(F_t, 0, 1)
+        F_t = np.uint8(F_t * 255.0)
 
-    misc.imsave(path_com + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png', F_t[0])
-    np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '_mv.npy', mv_latent)
-    np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '_res.npy', res_latent)
+        psnr_value[g * GOP_size + args.f_P + 1] = psnr
+        bpp_value[g * GOP_size + args.f_P + 1] = bpp
 
-sess.run(tf.global_variables_initializer())
-all_var = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-saver = tf.train.Saver(max_to_keep=None, var_list=all_var)
-model_path = './model/Interpolation/lambda_' + str(args.l) + '_inter_' + str(args.inter - 1) + '/'
-saver.restore(sess, save_path=model_path + 'model.ckpt-200000')
+        print('Frame', g * GOP_size + args.f_P + 2, args.metric + ' =', psnr)
 
-# encode GOPs
-for g in range(GOP_num):
+        misc.imsave(path_com + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png', F_t[0])
+        np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '_mv.npy', mv_latent)
+        np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '_res.npy', res_latent)
 
-    # print(GOP_size, g * GOP_size + args.f_P + args.inter + 3)
-    F_left = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.png').astype(float)
-    F_0 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png').astype(float)
-    F_1 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 2).zfill(3) + '.png').astype(float)
-    F_right = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 3).zfill(3) + '.png').astype(float)
+    sess.run(tf.global_variables_initializer())
+    all_var = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    saver = tf.train.Saver(max_to_keep=None, var_list=all_var)
+    model_path = './model/Interpolation/lambda_' + str(args.l) + '_inter_' + str(args.inter - 1) + '/'
+    saver.restore(sess, save_path=model_path + 'model.ckpt-200000')
 
-    G_t = misc.imread(path_raw + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '.png').astype(float)
+    # encode GOPs
+    for g in range(GOP_num):
 
-    input_data = np.stack([F_left, F_0, G_t, F_1, F_right], axis=0)
-    input_data = np.expand_dims(input_data / 255.0, axis=0)
+        # print(GOP_size, g * GOP_size + args.f_P + args.inter + 3)
+        F_left = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.png').astype(float)
+        F_0 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + 2).zfill(3) + '.png').astype(float)
+        F_1 = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 2).zfill(3) + '.png').astype(float)
+        F_right = misc.imread(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 3).zfill(3) + '.png').astype(float)
 
-    psnr, bpp, F_t, mv_latent, res_latent\
-        = sess.run([psnr_loss, bpp_loss, frame_t_com, flow_lat, res_lat],
-                   feed_dict={data_tensor: input_data, inter_num:args.inter - 1})
+        G_t = misc.imread(path_raw + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '.png').astype(float)
 
-    # with open(path_bin + '/f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.bin', "wb") as ff:
-    #     ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
-    #     ff.write(string_MV)
-    #     ff.write(string_Res)
+        input_data = np.stack([F_left, F_0, G_t, F_1, F_right], axis=0)
+        input_data = np.expand_dims(input_data / 255.0, axis=0)
 
-    F_t = np.clip(F_t, 0, 1)
-    F_t = np.uint8(F_t * 255.0)
+        psnr, bpp, F_t, mv_latent, res_latent\
+            = sess.run([psnr_loss, bpp_loss, frame_t_com, flow_lat, res_lat],
+                    feed_dict={data_tensor: input_data, inter_num:args.inter - 1})
 
-    psnr_value[g * GOP_size + args.f_P + args.inter] = psnr
-    bpp_value[g * GOP_size + args.f_P + args.inter] = bpp
+        # with open(path_bin + '/f' + str(g * GOP_size + args.f_P + 1).zfill(3) + '.bin', "wb") as ff:
+        #     ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
+        #     ff.write(string_MV)
+        #     ff.write(string_Res)
 
-    print('Frame', g * GOP_size + args.f_P + args.inter + 1, args.metric + ' =', psnr)
+        F_t = np.clip(F_t, 0, 1)
+        F_t = np.uint8(F_t * 255.0)
 
-    misc.imsave(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '.png', F_t[0])
-    np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '_mv.npy', mv_latent)
-    np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '_res.npy', res_latent)
+        psnr_value[g * GOP_size + args.f_P + args.inter] = psnr
+        bpp_value[g * GOP_size + args.f_P + args.inter] = bpp
 
-print('Average: ' + args.path, np.average(psnr_value), np.average(bpp_value))
+        print('Frame', g * GOP_size + args.f_P + args.inter + 1, args.metric + ' =', psnr)
 
-np.save(path_bin + '/quality.npy', psnr_value)
-np.save(path_bin + '/bpp.npy', bpp_value)
+        misc.imsave(path_com + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '.png', F_t[0])
+        np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '_mv.npy', mv_latent)
+        np.save(path_lat + 'f' + str(g * GOP_size + args.f_P + args.inter + 1).zfill(3) + '_res.npy', res_latent)
+
+    print('Average: ' + args.path, np.average(psnr_value), np.average(bpp_value))
+
+    np.save(path_bin + '/quality.npy', psnr_value)
+    np.save(path_bin + '/bpp.npy', bpp_value)
 
 
 

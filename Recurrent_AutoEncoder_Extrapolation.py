@@ -12,8 +12,8 @@ import flow_vis
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-config = tf.ConfigProto(allow_soft_placement=True)
-sess = tf.Session(config=config)
+#config = tf.ConfigProto(allow_soft_placement=True)
+#sess = tf.Session(config=config)
 
 parser = argparse.ArgumentParser(
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -30,6 +30,13 @@ parser.add_argument("--N", type=int, default=128, choices=[128])
 parser.add_argument("--M", type=int, default=128, choices=[128])
 
 args = parser.parse_args()
+
+#gpu_options = tf.GPUOptions(allow_growth=True)
+model_path = './model/Extrapolation/lambda_' + str(args.l) + '_extra'
+#config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 0.9
 
 # Settings
 I_level, Height, Width, batch_size, Channel, \
@@ -120,127 +127,208 @@ psnr_mc = 10.0 * tf.log(1.0 / mse_mc) / tf.log(10.0)
 #     psnr_mc = 10.0 * tf.log(1.0 / mse_mc) / tf.log(10.0)
 
 # load model
-saver = tf.train.Saver(max_to_keep=None)
-model_path = './model/Extrapolation/lambda_' + str(args.l) + '_extra'
-saver.restore(sess, save_path=model_path + '/model.ckpt-150000')
+#saver = tf.train.Saver(max_to_keep=None)
+#model_path = './model/Extrapolation/lambda_' + str(args.l) + '_extra'
+#saver.restore(sess, save_path=model_path + '/model.ckpt-150000')
+
+init = tf.global_variables_initializer()
+with tf.Session(config=config) as sess:
+
+    sess.run(init)
+    saver = tf.train.Saver(max_to_keep=None)
+    saver.restore(sess, save_path=model_path + '/model.ckpt-150000')
 
 
-# init quality
-quality_frame = np.zeros([args.frame])
+    # init quality
+    quality_frame = np.zeros([args.frame])
 
-# encode the first I frame
-frame_index = 1
-quality = helper2.encode_I(args, frame_index, I_level, path, path_com, path_bin)
-quality_frame[frame_index - 1] = quality
-
-if os.path.exists(path_com + '/extra_states'):
-    os.system('rm -r ' + path_com + '/extra_states')
-
-# encode GOPs
-for g in range(GOP_num):
-
-    np.save(path_bin + 'quality.npy', quality_frame)
-
-    # forward P frames
-
-    # load I frame (compressed)
-    frame_index = g * GOP_size + 1
-    F0_com = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '.png')
-    F0_com = np.expand_dims(F0_com, axis=0)
-
-    for f in range(args.f_P):
-
-        # load P frame (raw)
-        frame_index = g * GOP_size + f + 2
-        F1_raw = misc.imread(path + 'f' + str(frame_index).zfill(3) + '.png')
-        F1_raw = np.expand_dims(F1_raw, axis=0)
-
-        # init hidden states
-        if f % 5 == 0:
-            h_state = np.zeros([8, batch_size, Height // 4, Width // 4, args.N], dtype=np.float)
-            # since the model is optimized on 6 frames, we reset hidden states every 6 P frames
-
-        if f == 0:
-            flag = False
-            # the first P frame uses bottleneck
-        else:
-            flag = True
-
-        if f >= 1:
-            # python_cpu = ''
-            os.system(
-                'python Extrapolation.py --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
-            F_ref = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '_extra.png').astype(float)
-            F_ref = np.expand_dims(F_ref, axis=0)
-            # F_ref = np.load(path_com + 'f' + str(frame_index).zfill(3) + '_extra.npy') * 255.0
-            mse = np.mean(np.power(np.subtract(F_ref / 255.0, F1_raw / 255.0), 2.0))
-            quality = 10 * np.log10(1.0 / mse)
-
-            # print('Frame', frame_index, args.metric + '_extra =', quality)
-
-        else:
-            F_ref = F0_com
-
-        # run RAE
-        F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, motion_map \
-            = sess.run([Y1_decoded, string, string2, quality_tensor,
-             hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, motion_tensor],
-            feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
-                       hidden_states: h_state, RPM_flag: flag})
-        F0_com = F0_com * 255
-        # flow_color = flow_vis.flow_to_color(motion_map[0], convert_to_bgr=False)
-        # save bottleneck bitstream
-        if not flag:
-            with open(path_bin + '/f' + str(frame_index).zfill(3) + '.bin', "wb") as ff:
-                ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
-                ff.write(string_MV)
-                ff.write(string_Res)
-
-        # save compressed frame and latents
-        misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '.png', np.uint8(np.round(F0_com[0])))
-        # misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '_flow.png', flow_color)
-        np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_mv.npy', latent_mv)
-        np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_res.npy', latent_res)
-
-        quality_frame[frame_index - 1] = quality
-
-        print('Frame', frame_index, args.metric + ' =', quality)
-
-    os.system('rm -r ' + path_com + '/extra_states')
-
-    # encode the next I frame
-    frame_index = (g + 1) * GOP_size + 1
+    # encode the first I frame
+    frame_index = 1
     quality = helper2.encode_I(args, frame_index, I_level, path, path_com, path_bin)
     quality_frame[frame_index - 1] = quality
 
-    # backward P frames
+    if os.path.exists(path_com + '/extra_states'):
+        os.system('rm -r ' + path_com + '/extra_states')
+
+    # encode GOPs
+    for g in range(GOP_num):
+
+        np.save(path_bin + 'quality.npy', quality_frame)
+
+        # forward P frames
+
+        # load I frame (compressed)
+        frame_index = g * GOP_size + 1
+        F0_com = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '.png')
+        F0_com = np.expand_dims(F0_com, axis=0)
+
+        for f in range(args.f_P):
+
+            # load P frame (raw)
+            frame_index = g * GOP_size + f + 2
+            F1_raw = misc.imread(path + 'f' + str(frame_index).zfill(3) + '.png')
+            F1_raw = np.expand_dims(F1_raw, axis=0)
+
+            # init hidden states
+            if f % 5 == 0:
+                h_state = np.zeros([8, batch_size, Height // 4, Width // 4, args.N], dtype=np.float)
+                # since the model is optimized on 6 frames, we reset hidden states every 6 P frames
+
+            if f == 0:
+                flag = False
+                # the first P frame uses bottleneck
+            else:
+                flag = True
+
+            if f >= 1:
+                # python_cpu = ''
+                os.system(
+                    'python Extrapolation.py --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
+                F_ref = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '_extra.png').astype(float)
+                F_ref = np.expand_dims(F_ref, axis=0)
+                # F_ref = np.load(path_com + 'f' + str(frame_index).zfill(3) + '_extra.npy') * 255.0
+                mse = np.mean(np.power(np.subtract(F_ref / 255.0, F1_raw / 255.0), 2.0))
+                quality = 10 * np.log10(1.0 / mse)
+
+                # print('Frame', frame_index, args.metric + '_extra =', quality)
+
+            else:
+                F_ref = F0_com
+
+            # run RAE
+            F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, motion_map \
+                = sess.run([Y1_decoded, string, string2, quality_tensor,
+                hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, motion_tensor],
+                feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
+                        hidden_states: h_state, RPM_flag: flag})
+            F0_com = F0_com * 255
+            # flow_color = flow_vis.flow_to_color(motion_map[0], convert_to_bgr=False)
+            # save bottleneck bitstream
+            if not flag:
+                with open(path_bin + '/f' + str(frame_index).zfill(3) + '.bin', "wb") as ff:
+                    ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
+                    ff.write(string_MV)
+                    ff.write(string_Res)
+
+            # save compressed frame and latents
+            misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '.png', np.uint8(np.round(F0_com[0])))
+            # misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '_flow.png', flow_color)
+            np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_mv.npy', latent_mv)
+            np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_res.npy', latent_res)
+
+            quality_frame[frame_index - 1] = quality
+
+            print('Frame', frame_index, args.metric + ' =', quality)
+
+        os.system('rm -r ' + path_com + '/extra_states')
+
+        # encode the next I frame
+        frame_index = (g + 1) * GOP_size + 1
+        quality = helper2.encode_I(args, frame_index, I_level, path, path_com, path_bin)
+        quality_frame[frame_index - 1] = quality
+
+        # backward P frames
+
+        # load I frame (compressed)
+        F0_com = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '.png')
+        F0_com = np.expand_dims(F0_com, axis=0)
+
+        for f in range(args.b_P):
+
+            # load P frame (raw)
+            frame_index = (g + 1) * GOP_size - f
+            F1_raw = misc.imread(path + 'f' + str(frame_index).zfill(3) + '.png')
+            F1_raw = np.expand_dims(F1_raw, axis=0)
+
+            # init hidden states
+            if f % 5 == 0:
+                h_state = np.zeros([8, batch_size, Height // 4, Width // 4, args.N], dtype=np.float)
+                # since the model is optimized on 6 frames, we reset hidden states every 6 P frames
+
+            if f == 0:
+                flag = False
+                # the first P frame uses bottleneck
+            else:
+                flag = True
+
+            if f >= 1:
+                # python_cpu = ''
+                os.system(
+                    'python Extrapolation.py --dirc bw --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
+                F_ref = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '_extra.png').astype(float)
+                F_ref = np.expand_dims(F_ref, axis=0)
+
+                mse = np.mean(np.power(np.subtract(F_ref / 255.0, F1_raw / 255.0), 2.0))
+                quality = 10 * np.log10(1.0 / mse)
+
+                # print('Frame', frame_index, args.metric + '_extra =', quality)
+
+            else:
+                F_ref = F0_com
+
+            # run RAE
+            F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, motion_map \
+                = sess.run([Y1_decoded, string, string2, quality_tensor,
+                            hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, motion_tensor],
+                        feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
+                                    hidden_states: h_state, RPM_flag: flag})
+            F0_com = F0_com * 255
+
+            # flow_color = flow_vis.flow_to_color(motion_map[0], convert_to_bgr=False)
+
+            # save bottleneck bitstream
+            if not flag:
+                with open(path_bin + '/f' + str(frame_index).zfill(3) + '.bin', "wb") as ff:
+                    ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
+                    ff.write(string_MV)
+                    ff.write(string_Res)
+
+            # save compressed frame and latents
+            misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '.png', np.uint8(np.round(F0_com[0])))
+            # misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '_flow.png', flow_color)
+            np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_mv.npy', latent_mv)
+            np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_res.npy', latent_res)
+
+            quality_frame[frame_index - 1] = quality
+
+            print('Frame', frame_index, args.metric + ' =', quality)
+
+        os.system('rm -r ' + path_com + '/extra_states')
+
+    # encode rest frames
+    rest_frame_num = args.frame - 1 - GOP_size * GOP_num
+    print(rest_frame_num, GOP_size, GOP_num) #ADDED
 
     # load I frame (compressed)
+    frame_index = GOP_num * GOP_size + 1
     F0_com = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '.png')
     F0_com = np.expand_dims(F0_com, axis=0)
 
-    for f in range(args.b_P):
+    for f in range(rest_frame_num):
 
         # load P frame (raw)
-        frame_index = (g + 1) * GOP_size - f
+        frame_index = GOP_num * GOP_size + f + 2
         F1_raw = misc.imread(path + 'f' + str(frame_index).zfill(3) + '.png')
         F1_raw = np.expand_dims(F1_raw, axis=0)
 
         # init hidden states
         if f % 5 == 0:
             h_state = np.zeros([8, batch_size, Height // 4, Width // 4, args.N], dtype=np.float)
+            if os.path.exists(path_com + '/extra_states'):
+                os.system('rm -r ' + path_com + '/extra_states')
             # since the model is optimized on 6 frames, we reset hidden states every 6 P frames
 
         if f == 0:
             flag = False
-            # the first P frame uses bottleneck
+            # the first P frame uses the bottleneck
         else:
             flag = True
 
+
         if f >= 1:
             # python_cpu = ''
-            os.system(
-                'python Extrapolation.py --dirc bw --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
+            os.system('python Extrapolation.py --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
+
             F_ref = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '_extra.png').astype(float)
             F_ref = np.expand_dims(F_ref, axis=0)
 
@@ -252,16 +340,14 @@ for g in range(GOP_num):
         else:
             F_ref = F0_com
 
+
         # run RAE
-        F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, motion_map \
+        F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, res_value \
             = sess.run([Y1_decoded, string, string2, quality_tensor,
-                        hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, motion_tensor],
-                       feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
-                                  hidden_states: h_state, RPM_flag: flag})
+                        hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, Res],
+                    feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
+                                hidden_states: h_state, RPM_flag: flag})
         F0_com = F0_com * 255
-
-        # flow_color = flow_vis.flow_to_color(motion_map[0], convert_to_bgr=False)
-
         # save bottleneck bitstream
         if not flag:
             with open(path_bin + '/f' + str(frame_index).zfill(3) + '.bin', "wb") as ff:
@@ -271,7 +357,6 @@ for g in range(GOP_num):
 
         # save compressed frame and latents
         misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '.png', np.uint8(np.round(F0_com[0])))
-        # misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '_flow.png', flow_color)
         np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_mv.npy', latent_mv)
         np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_res.npy', latent_res)
 
@@ -279,83 +364,13 @@ for g in range(GOP_num):
 
         print('Frame', frame_index, args.metric + ' =', quality)
 
-    os.system('rm -r ' + path_com + '/extra_states')
+    if os.path.exists(path_com + '/extra_states'):
+        os.system('rm -r ' + path_com + '/extra_states')
 
-# encode rest frames
-rest_frame_num = args.frame - 1 - GOP_size * GOP_num
+    np.save(path_bin + 'quality.npy', quality_frame)
 
-# load I frame (compressed)
-frame_index = GOP_num * GOP_size + 1
-F0_com = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '.png')
-F0_com = np.expand_dims(F0_com, axis=0)
-
-for f in range(rest_frame_num):
-
-    # load P frame (raw)
-    frame_index = GOP_num * GOP_size + f + 2
-    F1_raw = misc.imread(path + 'f' + str(frame_index).zfill(3) + '.png')
-    F1_raw = np.expand_dims(F1_raw, axis=0)
-
-    # init hidden states
-    if f % 5 == 0:
-        h_state = np.zeros([8, batch_size, Height // 4, Width // 4, args.N], dtype=np.float)
-        if os.path.exists(path_com + '/extra_states'):
-            os.system('rm -r ' + path_com + '/extra_states')
-        # since the model is optimized on 6 frames, we reset hidden states every 6 P frames
-
-    if f == 0:
-        flag = False
-        # the first P frame uses the bottleneck
-    else:
-        flag = True
-
-
-    if f >= 1:
-        # python_cpu = ''
-        os.system('python Extrapolation.py --path ' + path_com + ' --idx ' + str(frame_index) + ' --l ' + str(args.l))
-
-        F_ref = misc.imread(path_com + 'f' + str(frame_index).zfill(3) + '_extra.png').astype(float)
-        F_ref = np.expand_dims(F_ref, axis=0)
-
-        mse = np.mean(np.power(np.subtract(F_ref / 255.0, F1_raw / 255.0), 2.0))
-        quality = 10 * np.log10(1.0 / mse)
-
-        # print('Frame', frame_index, args.metric + '_extra =', quality)
-
-    else:
-        F_ref = F0_com
-
-
-    # run RAE
-    F0_com, string_MV, string_Res, quality, h_state, latent_mv, latent_res, psnr_mc_value, res_value \
-        = sess.run([Y1_decoded, string, string2, quality_tensor,
-                    hidden_states_out, motion_latent_hat, res_latent_hat, psnr_mc, Res],
-                   feed_dict={Y0_com_tensor: F_ref / 255.0, Y1_raw_tensor: F1_raw / 255.0,
-                              hidden_states: h_state, RPM_flag: flag})
-    F0_com = F0_com * 255
-    # save bottleneck bitstream
-    if not flag:
-        with open(path_bin + '/f' + str(frame_index).zfill(3) + '.bin', "wb") as ff:
-            ff.write(np.array(len(string_MV), dtype=np.uint16).tobytes())
-            ff.write(string_MV)
-            ff.write(string_Res)
-
-    # save compressed frame and latents
-    misc.imsave(path_com + '/f' + str(frame_index).zfill(3) + '.png', np.uint8(np.round(F0_com[0])))
-    np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_mv.npy', latent_mv)
-    np.save(path_lat + '/f' + str(frame_index).zfill(3) + '_res.npy', latent_res)
-
-    quality_frame[frame_index - 1] = quality
-
-    print('Frame', frame_index, args.metric + ' =', quality)
-
-if os.path.exists(path_com + '/extra_states'):
-    os.system('rm -r ' + path_com + '/extra_states')
-
-np.save(path_bin + 'quality.npy', quality_frame)
-
-os.system('rm ' + path_com + '/*_extra.png')
-os.system('rm ' + path_com + '/*.yuv')
+    os.system('rm ' + path_com + '/*_extra.png')
+    os.system('rm ' + path_com + '/*.yuv')
 
 
 

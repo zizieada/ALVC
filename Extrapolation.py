@@ -9,8 +9,8 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # config = tf.ConfigProto(allow_soft_placement=True, device_count={'GPU': 0})
-config = tf.ConfigProto(allow_soft_placement=True)
-sess = tf.Session(config=config)
+#config = tf.ConfigProto(allow_soft_placement=True)
+#sess = tf.Session(config=config)
 
 parser = argparse.ArgumentParser(
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -22,6 +22,15 @@ parser.add_argument("--idx", type=int, default=3)
 parser.add_argument("--l", type=int, default=1024, choices=[256, 512, 1024, 2048])
 parser.add_argument("--dirc", type=str, default='fw', choices=['fw', 'bw'])
 args = parser.parse_args()
+
+save_root = './model' #CHANGED
+save_path = save_root + '/Extrapolation/lambda_' + str(args.l) + '_extra/' #CHANGED
+#gpu_options = tf.GPUOptions(allow_growth=True)
+#config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
+
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
+config.gpu_options.per_process_gpu_memory_fraction = 0.9
 
 os.makedirs(args.path + '/extra_states', exist_ok=True)
 
@@ -75,28 +84,34 @@ s_enc_1, s_enc_2 = state_encoder
 s_dec_1, s_dec_2 = state_decoder
 s_fea_1, s_fea_2 = state_feature
 
-saver = tf.train.Saver(max_to_keep=None)
-save_root = './model' #CHANGED from '/scratch_net/maja_second/'
-save_path = save_root + '/Extrapolation/lambda_' + str(args.l) + '_extra/' #CHANGED from save_path = save_root + '/RLVC_VTM/lambda_' + str(args.l) + '_extra/'
-# latest_model = tf.train.latest_checkpoint(checkpoint_dir=save_path)
-if os.path.exists(save_path + 'model.ckpt.index'):
-    saver.restore(sess, save_path + 'model.ckpt')
-else:
-    saver.restore(sess, save_path + 'model.ckpt-150000')
+init = tf.global_variables_initializer()
+with tf.Session(config=config) as sess:
 
-frame_out, state_enc_1, state_enc_2, \
-state_dec_1, state_dec_2, state_fea_1, state_fea_2, pre_flow \
-    = sess.run([frame_output, s_enc_1, s_enc_2, s_dec_1, s_dec_2, s_fea_1, s_fea_2, flow])
+    sess.run(init)
 
-# np.save(args.path + 'f' + str(args.idx).zfill(3) + '_extra.npy', frame_out)
-frame_out = np.uint8(np.round(np.clip(frame_out, 0, 1) * 255.0))
-imageio.imwrite(args.path + 'f' + str(args.idx).zfill(3) + '_extra.png', frame_out[0])
+    saver = tf.train.Saver(max_to_keep=None)
+    #save_root = '/scratch_net/maja_second/'
+    #save_path = save_root + '/RLVC_VTM/lambda_' + str(args.l) + '_extra/'
 
-np.save(args.path + '/extra_states/state_enc_1.npy', state_enc_1)
-np.save(args.path + '/extra_states/state_enc_2.npy', state_enc_2)
-np.save(args.path + '/extra_states/state_dec_1.npy', state_dec_1)
-np.save(args.path + '/extra_states/state_dec_2.npy', state_dec_2)
-np.save(args.path + '/extra_states/state_fea_1.npy', state_fea_1)
-np.save(args.path + '/extra_states/state_fea_2.npy', state_fea_2)
-np.save(args.path + '/extra_states/pre_flow.npy', pre_flow)
+    # latest_model = tf.train.latest_checkpoint(checkpoint_dir=save_path)
+    if os.path.exists(save_path + 'model.ckpt.index'):
+        saver.restore(sess, save_path + 'model.ckpt')
+    else:
+        saver.restore(sess, save_path + 'model.ckpt-150000')
+
+    frame_out, state_enc_1, state_enc_2, \
+    state_dec_1, state_dec_2, state_fea_1, state_fea_2, pre_flow \
+        = sess.run([frame_output, s_enc_1, s_enc_2, s_dec_1, s_dec_2, s_fea_1, s_fea_2, flow])
+
+    # np.save(args.path + 'f' + str(args.idx).zfill(3) + '_extra.npy', frame_out)
+    frame_out = np.uint8(np.round(np.clip(frame_out, 0, 1) * 255.0))
+    imageio.imwrite(args.path + 'f' + str(args.idx).zfill(3) + '_extra.png', frame_out[0])
+
+    np.save(args.path + '/extra_states/state_enc_1.npy', state_enc_1)
+    np.save(args.path + '/extra_states/state_enc_2.npy', state_enc_2)
+    np.save(args.path + '/extra_states/state_dec_1.npy', state_dec_1)
+    np.save(args.path + '/extra_states/state_dec_2.npy', state_dec_2)
+    np.save(args.path + '/extra_states/state_fea_1.npy', state_fea_1)
+    np.save(args.path + '/extra_states/state_fea_2.npy', state_fea_2)
+    np.save(args.path + '/extra_states/pre_flow.npy', pre_flow)
 
