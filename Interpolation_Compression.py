@@ -6,6 +6,7 @@ from functions_inter import *
 from scipy import misc
 import inv_flow
 import mc_func
+import tensorflow as tf
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -32,7 +33,7 @@ args = parser.parse_args()
 #config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 config = tf.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
-config.gpu_options.per_process_gpu_memory_fraction = 0.9
+#config.gpu_options.per_process_gpu_memory_fraction = 0.9
 
 model_path = './model/Interpolation/lambda_' + str(args.l) + '_inter_' + str(args.inter) + '/'
 

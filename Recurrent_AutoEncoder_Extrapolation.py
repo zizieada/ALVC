@@ -36,7 +36,7 @@ model_path = './model/Extrapolation/lambda_' + str(args.l) + '_extra'
 #config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 config = tf.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
-config.gpu_options.per_process_gpu_memory_fraction = 0.9
+#config.gpu_options.per_process_gpu_memory_fraction = 0.9
 
 # Settings
 I_level, Height, Width, batch_size, Channel, \
